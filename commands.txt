@@ -1,0 +1,75 @@
+# установка targetcli
+apt install targetcli-fb
+
+shared диск будет vdb
+
+---------------
+# вход в targetcli
+targetcli
+
+ls
+создаем блочное хранилище:
+cd /backstores/block
+create disk01 /dev/vdb
+
+создаем iqn:
+/backstores/block> cd /iscsi
+/iscsi> create iqn.2024-05.otus-hl:storage.target00
+
+создаем lun - логический юнит, который мы расшариваем:
+/iscsi> cd iqn.2024-05.otus-hl:storage.target00/tpg1/luns
+/iscsi/iqn.20...t00/tpg1/luns> create /backstores/block/disk01 lun=1
+
+отключаем аутентификацию:
+cd .. 
+/iscsi/iqn.20...target00/tpg1> set attribute authentication=0
+
+
+настройка инициатора на клиенте:
+root@cluster1:~# apt install open-iscsi
+vim /etc/iscsi/initiatorname.iscsi
+    InitiatorName=iqn.2024-12.com.ubuntu:01:688cf580e02f
+systemctl restart iscsid
+
+на сервере добавляем этот iqn в access list:
+cd acl
+/iscsi/iqn.20...t00/tpg1/acls> create iqn.2024-12.com.ubuntu:01:688cf580e02f
+
+на клиенте проверяем подключение.
+смотрим доступные таргеты:
+root@cluster1:/etc/iscsi# iscsiadm -m discovery -t st -p 10.16.0.27
+    "10.16.0.27:3260,1 iqn.2024-05.otus-hl:storage.target00"
+
+логинимся:
+root@cluster1:/etc/iscsi# iscsiadm -m node -l -T iqn.2024-05.otus-hl:storage.target00
+    Logging in to [iface: default, target: iqn.2024-05.otus-hl:storage.target00, portal: 10.16.0.27,3260]
+    Login to [iface: default, target: iqn.2024-05.otus-hl:storage.target00, portal: 10.16.0.27,3260] successful.
+
+смотрим диски:
+root@cluster1:/etc/iscsi# lsblk
+NAME   MAJ:MIN RM SIZE RO TYPE MOUNTPOINTS
+sda      8:0    0   5G  0 disk 
+vda    253:0    0  10G  0 disk 
+├─vda1 253:1    0   1M  0 part 
+└─vda2 253:2    0  10G  0 part /
+видим наш isci диск sda
+
+стартуем systemd unit "iscsi", который будет при перезагрузке подключать наш диск:
+systemctl start iscsi
+
+-----------------------------
+
+multipath настраивать не буду
+
+-----------------------------
+
+НАСТРОЙКА gfs2
+
+GFS2 это распределённая (кластерная) файловая система. Позволяет нескольким узлам монтировать и управлять одной и той же файловой системой. 
+Для работы GFS2 нужны:
+1. DLM (Distributed lock manager) - менеджер блокировок. Координирует одновременный доступ к файлам на GFS2.
+2. cLVM (clustered LVM) - Кластерное управление логичискими томами. Нужен для того чтобы управлять томами на который размещены файловые системы GFS2 и чтобы
+они совместно использовались между узлами кластера.
+
+Чтобы вручную не настраивать DLM и cLVM, вручную не монтировать на каждом узле кластера файловую систему, не следить самим за состоянием узлов будем
+использовать Paycmaker. Такую связки и рекомендуется использовать.

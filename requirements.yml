@@ -1,0 +1,2 @@
+# ansible-role-iscsi_target
+- src: https://github.com/githubixx/ansible-role-iscsi_target.git
