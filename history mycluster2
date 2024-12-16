@@ -1,0 +1,12 @@
+1  /etc/watchdog.d/
+    2  mkdir /etc/watchdog.d/
+    3  cp /usr/share/cluster/fence_scsi_check /etc/watchdog.d/
+    4  systemctl enable --now watchdog
+    5  vi /etc/lvm/lvm.conf
+    6  lvmdevices --adddev /dev/sda
+    7  vgchange --lock-start vg01
+    8  vgs
+    9  df -hT
+   10  ll /mnt/
+   11  touch /mnt/node02
+   12  history 
