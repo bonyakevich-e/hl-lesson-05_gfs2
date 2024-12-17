@@ -136,47 +136,6 @@ resource "null_resource" "ansible" {
   }
 }
 
-/* resource "ansible_playbook" "nginx_provision" {
-  playbook = "playbook.yml"
-
-  name   = yandex_compute_instance.nginx.name
-  groups = ["nginx"]
-
-  limit = [yandex_compute_instance.nginx.name]
-
-  extra_vars = {
-    ansible_host                 = yandex_compute_instance.nginx.network_interface.0.nat_ip_address,
-    ansible_user                 = "ubuntu",
-    ansible_ssh_private_key_file = "~/.ssh/id_ed25519",
-    ansible_ssh_common_args      = "-o StrictHostKeyChecking=no",
-    nginx_external_ip            = yandex_compute_instance.nginx.network_interface.0.nat_ip_address,
-    backend01_internal_ip        = yandex_compute_instance.backend01.network_interface.0.ip_address
-  }
-
-  replayable = true
-  verbosity  = 3 # set the verbosity level of the debug output for this playbook
-}
-
-resource "ansible_playbook" "backend01_provision" {
-  playbook = "playbook.yml"
-
-  name   = yandex_compute_instance.backend01.name
-  groups = ["backend"]
-
-  limit = [yandex_compute_instance.backend01.name]
-
-  extra_vars = {
-    ansible_host                 = yandex_compute_instance.backend01.network_interface.0.nat_ip_address,
-    ansible_user                 = "ubuntu",
-    ansible_ssh_private_key_file = "~/.ssh/id_ed25519",
-    ansible_ssh_common_args      = "-o StrictHostKeyChecking=no"
-  }
-
-  replayable = true
-  verbosity  = 3 # set the verbosity level of the debug output for this playbook
-}
- */
-
 output "internal_ip_address_nginx0" {
   value = yandex_compute_instance.iscsi.network_interface.0.ip_address
 }
