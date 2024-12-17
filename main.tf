@@ -118,7 +118,7 @@ resource "local_file" "playbook_yml" {
   })
 }
 
-# создаем скрипт, который выполнит настройку
+# создаем скрипт, который выполняет настройку iscsi сервера
 resource "local_file" "setup_iscsi_target" {
   filename        = "./iscsi_target.bash"
   file_permission = "0644"
@@ -128,6 +128,12 @@ resource "local_file" "setup_iscsi_target" {
     cluster_name = var.cluster_instance_name
   })
 
+}
+
+resource "null_resource" "ansible" {
+  provisioner "local-exec" {
+    command = "ansible-playbook -i ${local_file.inventory.filename} ${local_file.playbook_yml.filename}"
+  }
 }
 
 /* resource "ansible_playbook" "nginx_provision" {

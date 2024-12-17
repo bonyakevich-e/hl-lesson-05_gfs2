@@ -4,6 +4,11 @@
   become: yes
   gather_facts: no
   tasks:
+  
+# ждем пока виртуальные машины придут в себя. иначе могу быть баги с утановкой пакетов  
+  - name: Pause for 2 minutes
+    ansible.builtin.pause:
+      minutes: 2
 
   - name: Wait for system to become reachable
     ansible.builtin.wait_for_connection:
@@ -104,124 +109,170 @@ ${iscsi.network_interface.0.ip_address}	${iscsi.hostname}\n
       name: hacluster
       password: $5$A55.Uz8o.y8MuGaf$w3axEzoOgSeGyJo3OE56a4Ki1ctGEWP1GMyU7tOVJu6
 
-#  - name: Start cluster services
-#    service:
-#      name: "{{ item }}"
-#      state: started
-#      enabled: yes
-#    with_items:
-#      - pcsd
+# стартуем pcsd
+  - name: Start cluster services
+    service:
+      name: "{{ item }}"
+      state: started
+      enabled: yes
+    with_items:
+      - pcsd
 
-# настраиваем Corosync. Аутентифицируем ноды, которые будут составлять наш кластер
-#  - name: Set up corosync nodes
-#    run_once: true
-#    command:
-#      cmd: /sbin/pcs host auth -u hacluster -p 123 %{for node in nodes}${node.hostname} %{endfor}
-#      creates: /var/lib/pcsd/tokens
+# аутентифицируем ноды, которые будут составлять наш кластер
+  - name: authorize among nodes
+    run_once: true
+    command:
+      cmd: /sbin/pcs host auth -u hacluster -p 123 %{for node in nodes}${node.hostname} %{endfor}
+      creates: /var/lib/pcsd/tokens
 
-# Настраиваем файл конфигурации кластера и синхронизируем конфигурацию с указанными узлами
-#  - name: Create cluster
-#    run_once: true
-#    command:
-#      cmd: pcs cluster setup ${cluster_name} --start --enable%{for node in nodes} ${node.hostname}%{endfor} --force
-#      creates: /etc/corosync/corosync.conf
+# настраиваем кластер
+  - name: configure cluster
+    tags: set cluster
+    run_once: true
+    command:
+      cmd: pcs cluster setup ${cluster_name} --start --enable%{for node in nodes} ${node.hostname}%{endfor} --force
+      
 
-# Отключаем STONIGHT, он же FENCING
-#  - name: Disable fencing
-#    run_once: true
-#    command: /sbin/pcs property set stonith-enabled=false
+# копируем fencing скрипт для мониторинга iscsi в watchdog.d
+  - name: copy fence_scsi_check script to watchdog.d directory
+    tags: copy fence_scsi_check
+    ansible.builtin.copy:
+      src: /usr/share/cluster/fence_scsi_check
+      dest: /etc/watchdog.d/
+      remote_src: yes
 
-# Если кворум не соблюдается, замораживаем кластер
-#  - name: Freeze a no-quorum policy
-#    run_once: true
-#    command: /sbin/pcs property set no-quorum-policy=freeze
+# запускаем watchdog
+  - name: start watchdog
+    tags: start watchdog
+    ansible.builtin.service:
+      name: watchdog
+      state: started
+      enabled: yes
 
-# Создаем ресурс dlm
-#  - name: Create dlm
-#    run_once: true
-#    command: /sbin/pcs resource create dlm ocf:pacemaker:controld op start timeout=90s interval=0 op stop timeout=100s interval=0
-#    register: result
-#    failed_when:
-#      - result.rc != 0 and "already exists" not in result.stderr
+# получаем wwn-идентификатор iscsi диска
+  - name: confirm iscsi disk ID
+    tags: wwn-id
+    run_once: true
+    ansible.builtin.shell: ls -l /dev/disk/by-id | grep sda | grep wwn | cut -d ' ' -f 10
+    register: wwn_id
+
+  - name: show wwn id
+    tags: wwn-id
+    run_once: true
+    ansible.builtin.debug: 
+      msg: WWN-ID  {{wwn_id.stdout}}
+    
+
+# настраиваем fencing
+  - name: set fencing
+    tags: set fencing
+    run_once: true
+    ansible.builtin.command: 
+      cmd: pcs stonith create scsi-shooter fence_scsi pcmk_host_list="%{for node in nodes} ${node.hostname}%{endfor}" devices=/dev/disk/by-id/{{wwn_id.stdout}} meta provides=unfencing
+    
+# включаем поддержку lvmlockd
+  - name: uncomment use_lvmlockd in lvm.conf
+    tags: set use_lvmlockd
+    ansible.builtin.lineinfile:
+      dest: /etc/lvm/lvm.conf
+      regexp: '#\s*use_lvmlockd = 0'
+      line: 'use_lvmlockd = 1'
+
+# устанавливаем [no-quorum-policy=freeze] на GFS2
+  - name: Freeze a no-quorum policy
+    tags: set no-quorum-policy
+    run_once: true
+    command: /sbin/pcs property set no-quorum-policy=freeze
+
+# Создаем ресурс controld
+  - name: create controld resource
+    tags: set controld
+    run_once: true
+    command: /sbin/pcs resource create dlm ocf:pacemaker:controld op monitor interval=30s on-fail=fence group locking --future
+    register: result
+    failed_when:
+      - result.rc != 0 and "already exists" not in result.stderr
+
+  - name: create clone of [locking] to activate it on all nodes in cluster
+    tags: set locking
+    run_once: true
+    command: pcs resource clone locking interleave=true
 
 # Создаем ресурс lvmlockd
-#  - name: Create clvmd
-#    run_once: true
-#    command: /sbin/pcs resource create lvmlockd ocf:heartbeat:lvmlockd op start timeout=90s interval=0 op stop timeout=100s interval=0
-#    register: result
-#    failed_when:
-#      - result.rc != 0 and "already exists" not in result.stderr
-
-# указываем порядок запуска ресурсов на нодах
-#  - name: Set order constraint
-#    run_once: true
-#    command: pcs constraint order start dlm then lvmlockd
-#    register: result
-#    failed_when:
-#    - result.rc != 0 and "already exists" not in result.stderr
-
-# указываем какие ресурсы размещать на одной ноде
-#  - name: Set colocation constraint
-#    run_once: true
-#    command: pcs constraint colocation add lvmlockd with dlm
-#    register: result
-#    failed_when:
-#    - result.rc != 0 and "already exists" not in result.stderr
+  - name: create lvmlockd resource
+    tags: set lvmlockd
+    run_once: true
+    command: /sbin/pcs resource create lvmlockdd ocf:heartbeat:lvmlockd op monitor interval=30s on-fail=fence group locking --future
+    register: result
+    failed_when:
+      - result.rc != 0 and "already exists" not in result.stderr
 
 # создаем кластерный VG на iscsi диске
-#  - name: Create a PV and VG
-#    run_once: true
-#    community.general.lvg:
-#      pvs: /dev/sda
-#      vg: ${vg_name}
-#      vg_options: --shared
+  - name: create a PV and VG
+    tags: set vg
+    run_once: true
+    community.general.lvg:
+      pvs: /dev/sda
+      vg: ${vg_name}
+      vg_options: --shared
 
-# создаем LV на только что созданном кластерном VG
-#  - name: Create a LV
-#    run_once: true
-#    community.general.lvol:
-#      vg: ${vg_name}
-#      lv: ${lv_name}
-#      size: 100%VG
+# на всех нодах запускаем lock manager для iscsi диска
+  - name: start lock manager for shared volume
+    tags: set lockmanager
+    command: vgchange --lock-start ${vg_name} 
+
+# создаем LV 
+  - name: create logical volume
+    tags: set lv
+    run_once: true
+    community.general.lvol:
+      vg: ${vg_name}
+      lv: ${lv_name}
+      size: 100%VG
 
 # создаем кластерную файловую систему gfs2 на только что созданном LV
-#  - name: Create a FS
-#    run_once: true
-#    command: mkfs.gfs2 -j ${cluster_size} -p lock_dlm -t ${cluster_name}:${fs_name} -O /dev/${vg_name}/${lv_name}
-#    register: result
-#    failed_when:
-#    - result.rc != 0
-#    - '"Device or resource busy" not in result.stderr'
+  - name: create a FS
+    tags: set fs
+    run_once: true
+    command: mkfs.gfs2 -j ${cluster_size} -p lock_dlm -t ${cluster_name}:${fs_name} -O /dev/${vg_name}/${lv_name}
+    register: result
+    failed_when:
+    - result.rc != 0
+    - '"Device or resource busy" not in result.stderr'
 
-# Создаем ресурс clusterfs
-#  - name: Create a clusterfs resource
-#    run_once: true
-#    command: /sbin/pcs resource create clusterfs ocf:heartbeat:Filesystem device=/dev/${vg_name}/${lv_name} directory=/mnt/gfs2 fstype=gfs2 options=noatime op monitor interval=10s on-fail=ignore clone interleave=true --wait
-#    register: result
-#    failed_when:
-#    - result.rc != 0
-#    - '"already exists" not in result.stderr'
+# создаем LVM-activate ресурс
+  - name: create LVM-activate resource
+    tags: set LVM-activate
+    run_once: true
+    command: pcs resource create shared_lv ocf:heartbeat:LVM-activate lvname=${lv_name} vgname=${vg_name} activation_mode=shared vg_access_mode=lvmlockd group shared_vg --future
 
-# указываем порядок запуска ресурсов на нодах
-#  - name: Set order constraint
-#    run_once: true
-#    command: pcs constraint order start clvmd-clone then clusterfs-clone
-#    register: result
-#    failed_when:
-#    - result.rc != 0
-#    - '"already exists" not in result.stderr'
+  - name: create clone of [LVM-activate]
+    tags: set LVM-activate
+    run_once: true
+    command: pcs resource clone shared_vg interleave=true
 
-# указываем какие ресурсы размещать на одной ноде
-#  - name: Set colocation constraint
-#    run_once: true
-#    command: pcs constraint colocation add clusterfs-clone with clvmd-clone
-#    register: result
-#    failed_when:
-#    - result.rc != 0
-#    - '"already exists" not in result.stderr'
+# устанавливаем порядок запуска ресурсов
+  - name: set that [shared_vg] and [locking] start on a same node
+    tags: set constraint
+    run_once: true
+    command: pcs constraint colocation add shared_vg-clone with locking-clone
+    register: result
+    failed_when:
+      - result.rc != 0 and "already exists" not in result.stderr
+
+# создаем Filesystem ресурс
+  - name: create Filesystem resource
+    tags: create filesystem resource
+    run_once: true
+    command: pcs resource create shared_fs ocf:heartbeat:Filesystem device="/dev/${vg_name}/${lv_name}" directory="/mnt" fstype="gfs2" options=noatime op monitor interval=10s on-fail=fence group shared_vg --future
+
+  - name: Pause for 10 seconds
+    ansible.builtin.pause:
+      seconds: 10
 
 # создаем файлы с именем ноды на расшаренном диске для демонстрации одновременного доступа
-#  - name: Put a test file
-#    shell:
-#      cmd: hostname >> hostnames
-#      chdir: /mnt/gfs2
+  - name: put a test file
+    tags: put a test file
+    shell:
+      cmd: hostname >> hostnames
+      chdir: /mnt
